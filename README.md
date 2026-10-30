@@ -103,6 +103,48 @@ OpenZeppelin lo mitiga sumando **shares y activos virtuales** a la cuenta (`tota
 
 Con offset 6 la víctima pierde prácticamente nada y el atacante pierde la mitad de lo que donó, así que el ataque deja de tener sentido.
 
+### Front-running
+
+Las transacciones pendientes están a la vista de todos en el mempool antes de entrar en un bloque. Un atacante (normalmente un bot) puede ver la tuya y meter la suya **antes**, pagando más gas para que el validador la ordene primero. En un vault esto sirve para dos cosas.
+
+**1. Robar rendimiento (*yield sniping*).** Si el vault va a recibir rendimiento de golpe (una transferencia o un `harvest`), el atacante deposita justo antes, deja que el rendimiento suba el precio de la share y retira justo después. Se lleva una parte de una ganancia que se generó cuando su dinero no estaba en el vault.
+
+Con la fórmula de SimpleVault, partiendo de Alice sola en el vault (1000 mUSDC, 1000 svUSDC) y 100 mUSDC de rendimiento pendientes:
+
+```mermaid
+sequenceDiagram
+    actor A as Atacante
+    participant M as Mempool
+    participant V as SimpleVault
+    actor R as Fuente de rendimiento
+
+    R->>M: transfer(vault, 100 mUSDC) pendiente
+    M-->>A: ve la transacción
+    A->>V: deposit(10.000 mUSDC) con más gas, entra primero
+    V-->>A: 10.000 svUSDC (precio 1,00)
+    R->>V: llegan los 100 mUSDC (precio 1,0091)
+    A->>V: redeem(10.000 svUSDC)
+    V-->>A: 10.090,91 mUSDC
+```
+
+| | Sin ataque | Con ataque |
+| --- | --- | --- |
+| Alice recupera | 1.099,999999 mUSDC | 1.009,09 mUSDC |
+| El atacante gana | — | 90,91 mUSDC |
+
+El atacante se queda con el 91% del rendimiento porque aportó el 91% del capital, aunque haya estado en el vault una sola transacción.
+
+**2. Empeorar tu precio (*sandwich*).** `deposit` y `redeem` no tienen un parámetro de mínimo a recibir. Entre que ves `previewDeposit` en la pantalla y que tu transacción se ejecuta, otra transacción puede mover el precio de la share y recibís menos de lo que esperabas, sin que nada revierta. El ataque de inflación de la sección anterior es justamente un caso de esto: el atacante tiene que ver tu depósito pendiente y meter la donación antes.
+
+**Cómo se mitiga:**
+
+- **Protección de slippage:** calcular con `preview*` lo que esperás recibir y revertir si el resultado real es menor. ERC-4626 no lo incluye; se hace con un contrato *router* que envuelve las llamadas o con las variantes de [EIP-5143](https://eips.ethereum.org/EIPS/eip-5143) (`deposit(assets, receiver, minShares)`, etc.).
+- **Repartir el rendimiento en el tiempo:** en lugar de sumarlo de golpe a `totalAssets()`, liberarlo linealmente durante horas o días. Así entrar y salir enseguida no captura casi nada.
+- **Fees o tiempos mínimos** de depósito/retiro, que hacen que entrar por un solo bloque no sea rentable.
+- **Mempool privado** (por ejemplo Flashbots Protect): la transacción va directo al constructor de bloques y los bots no la ven.
+
+SimpleVault y el frontend de este repo no implementan ninguna de estas protecciones: el frontend llama a `deposit` y `redeem` directamente. En Anvil no hay otros participantes en el mempool, así que no pasa nada, pero en una red pública sería un problema.
+
 ## Requisitos
 
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (`forge`, `anvil`, `cast`)
